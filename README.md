@@ -1,187 +1,80 @@
-# Afastamentos / Bloqueio de acessos — Plugin GLPI
+# Plugin Férias RH / Bloqueio de acessos (GLPI)
 
-Plugin para o **GLPI** onde o RH cadastra **afastamentos** de colaboradores
-(férias, licenças, etc.) num calendário e, com base nas datas, o sistema **abre
-chamados automaticamente**:
+Plugin para o GLPI onde o **RH cadastra as férias dos colaboradores** num
+calendário e, com base nas datas lançadas, o sistema **abre automaticamente**:
 
-- um **chamado de bloqueio** dos acessos no início do afastamento;
-- um **chamado de liberação** dos acessos no retorno.
+1. Um **chamado de bloqueio** dos acessos no início das férias.
+2. Um **chamado de liberação** dos acessos no retorno.
 
-Cada chamado já nasce com **tarefas separadas** (bloquear AD, Sectra, Office 365,
-redirecionar e-mail, etc.), totalmente configuráveis pela interface.
-
-> Compatível com **GLPI 10.0.x** e **GLPI 11.0.x**.
-
----
-
-## Índice
-
-- [Recursos](#recursos)
-- [Requisitos](#requisitos)
-- [Instalação](#instalação)
-- [Instalação em Docker](#instalação-em-docker)
-- [Configuração](#configuração)
-- [Uso](#uso)
-- [Como os chamados são abertos](#como-os-chamados-são-abertos)
-- [Cancelamento ao excluir](#cancelamento-ao-excluir)
-- [Estrutura de arquivos](#estrutura-de-arquivos)
-- [Notas técnicas](#notas-técnicas)
-- [Changelog](#changelog)
-- [Licença](#licença)
-
----
-
-## Recursos
-
-- **Cadastro de afastamentos** (colaborador + data de início + data de término + observações).
-- **Calendário mensal** com quem está afastado em cada dia.
-- **Linha do tempo (Gantt)** com todos os afastamentos da janela, em barras por colaborador, para enxergar sobreposições.
-- **Listagem** com filtros, ordenação e exportação (motor de busca do GLPI).
-- **Abertura automática de chamados** de bloqueio (início) e liberação (retorno).
-- **Tarefas automáticas** por chamado, configuráveis (uma por linha), com lista de bloqueio e o espelho de liberação.
-- **Antecedência configurável** para abrir cada chamado (ex.: liberar acessos 1 dia antes do retorno).
-- **Abertura imediata** ao cadastrar afastamentos de hoje ou retroativos; o cron cuida dos futuros.
-- **Cancelamento automático** dos chamados vinculados ao excluir um afastamento.
-- **Categoria, grupo responsável e tipo** dos chamados definidos na configuração.
-
----
-
-## Requisitos
-
-| Item | Versão |
-|------|--------|
-| GLPI | 10.0.0+ ou 11.0.x |
-| PHP  | 7.4+ |
+Compatível com **GLPI 10.0.x e 11.0.x**.
 
 ---
 
 ## Instalação
 
-1. Copie a pasta `hrvacation` para o diretório de plugins do GLPI
-   (`plugins/` ou `marketplace/`):
+1. Copie a pasta `hrvacation` para o diretório `plugins/` da sua instalação GLPI:
 
    ```
-   <glpi>/plugins/hrvacation/setup.php
+   /caminho/do/glpi/plugins/hrvacation/
    ```
 
-2. Ajuste o dono dos arquivos para o usuário do servidor web:
+2. No GLPI, acesse **Configurar > Plugins**, localize "Férias RH / Bloqueio de
+   acessos" e clique em **Instalar** e depois em **Ativar**.
 
-   ```bash
-   chown -R www-data:www-data <glpi>/plugins/hrvacation
-   ```
-
-3. No GLPI, vá em **Configurar › Plugins**, localize
-   **Afastamentos / Bloqueio de acessos** e clique em **Instalar** e **Ativar**.
-
-4. Conceda o direito aos perfis que vão usar o plugin em
-   **Administração › Perfis**. Na instalação, apenas o **Super-Admin** recebe
-   acesso total.
-
----
-
-## Instalação em Docker
-
-Se você tem a pasta de plugins mapeada por volume, basta colocar a pasta
-`hrvacation` no diretório mapeado do host (a pasta direto dentro de `plugins/`
-ou `marketplace/`, sem nível extra) e ajustar o dono:
-
-```bash
-docker exec -u root SEU_CONTAINER \
-  chown -R www-data:www-data /var/www/html/glpi/marketplace/hrvacation
-```
-
-> Ajuste o caminho conforme a sua imagem (`/var/www/html/glpi`, `/var/glpi`, etc.).
-
-Como o GLPI 11 suspende a execução dos plugins ao detectar mudança de arquivos,
-após uma atualização pode ser necessário retomar a execução:
-
-```bash
-docker exec -u www-data SEU_CONTAINER php bin/console plugin:resume_execution
-```
-
-Comandos úteis via CLI:
-
-```bash
-docker exec -u www-data SEU_CONTAINER php bin/console plugin:install hrvacation
-docker exec -u www-data SEU_CONTAINER php bin/console plugin:activate hrvacation
-```
+3. Conceda o direito aos perfis que devem usar o plugin (ex.: um perfil "RH"):
+   **Administração > Perfis > [perfil] > aba do plugin**. Por padrão, apenas o
+   perfil **Super-Admin** recebe acesso total na instalação.
 
 ---
 
 ## Configuração
 
-Acesse a configuração do plugin (engrenagem em **Configurar › Plugins**) e defina:
+Acesse **Configurar > Plugins > Férias RH (engrenagem)** ou o link de
+configuração do plugin e defina:
 
 | Campo | Função |
 |-------|--------|
-| **Antecedência do chamado de bloqueio (dias)** | Quantos dias antes do início abrir o chamado. `0` = no próprio dia. |
-| **Antecedência do chamado de liberação (dias)** | Quantos dias antes do término abrir o chamado. `0` = no último dia. |
-| **Categoria do chamado de bloqueio** | Categoria ITIL aplicada ao chamado de bloqueio. |
-| **Categoria do chamado de liberação** | Categoria ITIL aplicada ao chamado de liberação. |
-| **Grupo responsável** | Grupo técnico atribuído aos chamados. |
-| **Tipo do chamado** | Incidente ou Requisição (padrão: Requisição). |
-| **Tarefas do chamado de bloqueio** | Uma tarefa por linha. Cada linha vira uma tarefa "a fazer". |
-| **Tarefas do chamado de liberação** | Idem, já pré-preenchido com o espelho do bloqueio. |
-
-As tarefas padrão de bloqueio:
-
-```
-Bloquear acesso Active Directory
-Bloquear acesso sectra Razek
-Bloquear acesso sectra SmartMed
-Bloquear acesso sectra Medfield
-Bloquear acesso Office 365
-Configurar mensagem de férias Office 365
-Redirecionar Email
-```
-
-E o espelho de liberação (desbloquear / remover redirecionamento, etc.).
+| Antecedência do chamado de **bloqueio** | Quantos dias antes do início das férias o chamado é aberto. `0` = no próprio dia. |
+| Antecedência do chamado de **liberação** | Quantos dias antes do término das férias o chamado é aberto. `0` = no último dia. |
+| Categoria do chamado de bloqueio | Categoria ITIL aplicada ao chamado de bloqueio. |
+| Categoria do chamado de liberação | Categoria ITIL aplicada ao chamado de liberação. |
+| Grupo responsável | Grupo técnico atribuído aos dois chamados. |
+| Tipo do chamado | Incidente ou Requisição (padrão: Requisição). |
 
 ---
 
 ## Uso
 
-- Menu **Ferramentas › Afastamentos**.
-- Botões no topo: **Calendário** e **Linha do tempo**.
-- **Cadastrar afastamento:** botão "+ Adicionar", o botão "Cadastrar afastamento"
-  no calendário/linha do tempo, ou clicando num dia do calendário.
-- Na listagem, clique no **ID** para abrir o afastamento.
+- Menu **Ferramentas > Períodos de férias**.
+- Use o ícone de **calendário** no menu para ver o mês e cadastrar férias.
+- Ao cadastrar um período (colaborador + início + término), os campos de
+  chamado ficam vazios até o cron abri-los no momento certo. Depois de abertos,
+  aparecem como links clicáveis no formulário do período.
 
 ---
 
-## Como os chamados são abertos
+## Como os chamados são abertos (tarefa automática / cron)
 
-A abertura é baseada nas **datas**, não no momento do cadastro (exceto retroativos):
+O plugin registra uma **ação automática diária** chamada `vacationTickets`
+(em **Configurar > Ações automáticas**). A cada execução ela:
 
-- **Bloqueio:** abre quando o início chega (hoje, dentro da antecedência ou
-  retroativo) e o afastamento ainda não terminou.
-- **Liberação:** abre quando o término entra na janela de antecedência.
+- **Bloqueio:** abre o chamado quando faltam até *N* dias (antecedência
+  configurada) para o **início** das férias e o período ainda não terminou.
+- **Liberação:** abre o chamado quando faltam até *N* dias para o **término**
+  das férias.
 
-Dois gatilhos trabalham juntos:
+Cada chamado é criado **uma única vez** — os IDs ficam gravados no período
+(`block_ticket_id` / `unblock_ticket_id`), evitando duplicação.
 
-1. **Ao cadastrar** — se o afastamento já começou ou começa hoje, o chamado de
-   bloqueio abre na hora do salvamento.
-2. **Tarefa automática diária** (`vacationTickets`) — cuida dos afastamentos
-   futuros, abrindo cada chamado quando a data chega. Roda em **modo GLPI
-   (interno)**, durante o uso normal do sistema.
+> **Importante:** para o disparo automático funcionar no horário esperado,
+> configure o GLPI em **modo CLI** de cron (recomendado), agendando
+> `php bin/console glpi:cron` (ou `front/cron.php`) no crontab do servidor,
+> idealmente para rodar de manhã cedo. No modo "GLPI" (web) o cron só roda
+> quando alguém acessa o sistema.
 
-> Para timing preciso em produção, recomenda-se agendar
-> `php bin/console glpi:cron` no servidor e trocar a tarefa para **modo CLI** em
-> **Configurar › Ações automáticas**. Para testar na hora, use o botão
-> **Executar** nessa mesma tela.
-
-Cada chamado é criado **uma única vez** — os IDs ficam gravados no afastamento,
-evitando duplicação.
-
----
-
-## Cancelamento ao excluir
-
-Ao **excluir** um afastamento, os chamados que já tinham sido abertos são
-**cancelados automaticamente** (recebem uma solução com o motivo, indo para o
-status *Solucionado*). Chamados já solucionados/fechados são ignorados. Se o
-afastamento for excluído antes do retorno, o chamado de liberação não chega a
-ser aberto.
+O colaborador entra como **requerente** dos chamados. Para alterar esse
+comportamento (ex.: usá-lo como observador e o RH como requerente), edite o
+método `openTicket()` em `src/Period.php`.
 
 ---
 
@@ -193,56 +86,26 @@ hrvacation/
 ├── hook.php                  # instalação/desinstalação, tabelas, direitos, cron
 ├── README.md
 ├── src/
-│   ├── Period.php            # itemtype Afastamento + formulário + calendário + timeline + cron
+│   ├── Period.php            # itemtype "período de férias" + formulário + calendário + cron
 │   └── Config.php            # configuração (linha única)
 └── front/
-    ├── period.php            # listagem
-    ├── period.form.php       # formulário (exibe e processa)
-    ├── calendar.php          # calendário mensal
-    ├── timeline.php          # linha do tempo (Gantt)
+    ├── period.php            # exibe o formulário do período
+    ├── period.form.php       # trata gravar/editar/excluir
+    ├── calendar.php          # página do calendário mensal
     └── config.form.php       # página de configuração
 ```
 
-Tabelas criadas: `glpi_plugin_hrvacation_periods` e `glpi_plugin_hrvacation_configs`.
-
 ---
 
-## Notas técnicas
+## Notas técnicas / pontos de ajuste
 
-- Segue as convenções do GLPI: classes em `/src` com namespace
-  `GlpiPlugin\Hrvacation` (PSR-4), tabelas `glpi_plugin_hrvacation_*`, sem chaves
-  estrangeiras.
-- Consultas via **query builder** do GLPI (sem SQL cru) e saída HTML escapada —
-  compatível com as mudanças de segurança do GLPI 11.
-- O calendário e a linha do tempo são renderizados em PHP puro, sem dependências
-  de JavaScript externo.
-- A camada `front/` é mantida (suportada pelo GLPI 11 por compatibilidade); pode
-  ser migrada para Controllers no futuro.
-
----
-
-## Changelog
-
-| Versão | Mudanças |
-|--------|----------|
-| 1.6.1 | Ícone alterado para período de ausência (`ti ti-calendar-off`). |
-| 1.6.0 | Renomeado de "férias" para "afastamento"; reordenação dos campos do formulário. |
-| 1.5.1 | Correção do salvamento da configuração ("XML not well formed"). |
-| 1.5.0 | Abertura imediata de afastamentos de hoje/retroativos; cron em modo GLPI; ID clicável na lista. |
-| 1.4.1 | Correção de idempotência na atualização (direitos de perfil duplicados). |
-| 1.4.0 | Cancelamento automático dos chamados vinculados ao excluir um afastamento. |
-| 1.3.0 | Tarefas automáticas configuráveis por chamado (bloqueio + espelho de liberação). |
-| 1.2.1 | Correção do roteamento das telas (botões de adicionar/abrir). |
-| 1.2.0 | Visão de linha do tempo (Gantt). |
-| 1.1.0 | Compatibilidade com GLPI 11. |
-| 1.0.0 | Versão inicial (GLPI 10): cadastro, calendário e abertura automática de chamados. |
-
----
-
-## Licença
-
-GPLv3+ — mesma licença do GLPI.
-
----
-
-Desenvolvido por **TI Razek**.
+- As tabelas seguem o padrão `glpi_plugin_hrvacation_*` e **não usam chaves
+  estrangeiras** (convenção do GLPI).
+- O calendário é renderizado em PHP puro (sem libs JS externas) para máxima
+  compatibilidade. Se quiser uma experiência mais rica (arrastar, cores por
+  status), dá para trocar pela biblioteca FullCalendar que já vem no GLPI.
+- **GLPI 11:** o plugin continua usando a camada `front/`, que o GLPI 11 ainda
+  suporta por compatibilidade. As consultas ao banco usam o query builder nativo
+  (sem SQL cru), e a saída HTML é escapada — atendendo às mudanças de
+  segurança do GLPI 11 (fim do auto-sanitize de `$_POST`/`$_GET`). Se um dia
+  quiser modernizar, dá para migrar `front/` para Controllers.

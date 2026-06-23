@@ -1,0 +1,893 @@
+<?php
+
+namespace GlpiPlugin\Hrvacation;
+
+use CommonDBTM;
+use CronTask;
+use Dropdown;
+use Group;
+use Html;
+use ITILCategory;
+use ITILSolution;
+use Log;
+use Session;
+use Ticket;
+use TicketTask;
+use Toolbox;
+use User;
+
+/**
+ * Período de férias de um colaborador.
+ *
+ * Cada registro representa as férias de um usuário entre date_start e date_end.
+ * A partir dessas datas, o cron abre os chamados de bloqueio e liberação.
+ */
+class Period extends CommonDBTM
+{
+    /** Direito usado para controlar o acesso ao plugin (configurável em Perfis). */
+    public static $rightname = 'plugin_hrvacation_period';
+
+    /** Mantém histórico de alterações na aba "Histórico". */
+    public $dohistory = true;
+
+    /**
+     * Nome do tipo de item exibido na interface.
+     */
+    public static function getTypeName($nb = 0)
+    {
+        return _n('Afastamento', 'Afastamentos', $nb, 'hrvacation');
+    }
+
+    /**
+     * Ícone do menu/itemtype.
+     */
+    public static function getIcon()
+    {
+        return 'ti ti-calendar-off';
+    }
+
+    /**
+     * Abas exibidas no formulário (formulário + histórico).
+     */
+    public function defineTabs($options = [])
+    {
+        $tabs = [];
+        $this->addDefaultFormTab($tabs)
+             ->addStandardTab(Log::class, $tabs, $options);
+        return $tabs;
+    }
+
+    /**
+     * Conteúdo do menu: lista, adicionar e o calendário.
+     */
+    public static function getMenuContent()
+    {
+        $menu = [];
+        if (!static::canView()) {
+            return false;
+        }
+
+        $menu['title'] = self::getMenuName();
+        $menu['page']  = self::getSearchURL(false);
+        $menu['icon']  = self::getIcon();
+
+        $menu['links']['search'] = self::getSearchURL(false);
+        if (self::canCreate()) {
+            $menu['links']['add'] = self::getFormURL(false);
+        }
+        // Link extra para o calendário, com ícone.
+        $calendar_url = '/plugins/hrvacation/front/calendar.php';
+        $menu['links']["<i class='ti ti-calendar-event pointer' title='" .
+            __s('Calendário', 'hrvacation') . "'></i>"] = $calendar_url;
+        $menu['links'][__('Calendário', 'hrvacation')] = $calendar_url;
+
+        // Link extra para a linha do tempo, com ícone.
+        $timeline_url = '/plugins/hrvacation/front/timeline.php';
+        $menu['links']["<i class='ti ti-timeline pointer' title='" .
+            __s('Linha do tempo', 'hrvacation') . "'></i>"] = $timeline_url;
+        $menu['links'][__('Linha do tempo', 'hrvacation')] = $timeline_url;
+
+        return $menu;
+    }
+
+    // ------------------------------------------------------------------ FORM
+
+    /**
+     * Validação/normalização ao criar.
+     */
+    public function prepareInputForAdd($input)
+    {
+        if (empty($input['entities_id'])) {
+            $input['entities_id'] = $_SESSION['glpiactive_entity'] ?? 0;
+        }
+        return $this->prepareCommon($input);
+    }
+
+    /**
+     * Validação/normalização ao atualizar.
+     */
+    public function prepareInputForUpdate($input)
+    {
+        return $this->prepareCommon($input);
+    }
+
+    /**
+     * Regras comuns de validação das datas.
+     */
+    protected function prepareCommon($input)
+    {
+        if (isset($input['date_start'], $input['date_end'])
+            && !empty($input['date_start']) && !empty($input['date_end'])
+            && $input['date_end'] < $input['date_start']) {
+            Session::addMessageAfterRedirect(
+                __('A data de término deve ser igual ou posterior à data de início.', 'hrvacation'),
+                false,
+                ERROR
+            );
+            return false;
+        }
+        return $input;
+    }
+
+    /**
+     * Renderiza o formulário de cadastro/edição de um período.
+     */
+    public function showForm($ID, array $options = [])
+    {
+        $this->initForm($ID, $options);
+        $this->showFormHeader($options);
+
+        echo "<tr class='tab_bg_1'>";
+        echo "<td>" . User::getTypeName(1) . " <span class='red'>*</span></td>";
+        echo "<td>";
+        User::dropdown([
+            'name'   => 'users_id',
+            'value'  => $this->fields['users_id'],
+            'right'  => 'all',
+            'entity' => $this->fields['entities_id'],
+        ]);
+        echo "</td>";
+        echo "<td>" . __('Comentários') . "</td>";
+        echo "<td>";
+        echo "<textarea class='form-control' name='comment' rows='3'>" .
+            Html::cleanInputText($this->fields['comment'] ?? '') . "</textarea>";
+        echo "</td>";
+        echo "</tr>";
+
+        echo "<tr class='tab_bg_1'>";
+        echo "<td>" . __('Início do afastamento', 'hrvacation') . " <span class='red'>*</span></td>";
+        echo "<td>";
+        Html::showDateField('date_start', ['value' => $this->fields['date_start']]);
+        echo "</td>";
+        echo "<td>" . __('Término do afastamento', 'hrvacation') . " <span class='red'>*</span></td>";
+        echo "<td>";
+        Html::showDateField('date_end', ['value' => $this->fields['date_end']]);
+        echo "</td>";
+        echo "</tr>";
+
+        // Mostra os chamados já gerados (somente leitura).
+        echo "<tr class='tab_bg_1'>";
+        echo "<td>" . __('Chamado de bloqueio', 'hrvacation') . "</td>";
+        echo "<td>" . self::getTicketLink($this->fields['block_ticket_id']) . "</td>";
+        echo "<td>" . __('Chamado de liberação', 'hrvacation') . "</td>";
+        echo "<td>" . self::getTicketLink($this->fields['unblock_ticket_id']) . "</td>";
+        echo "</tr>";
+
+        $this->showFormButtons($options);
+        return true;
+    }
+
+    /**
+     * Retorna um link clicável para um chamado, ou um traço se não existir.
+     */
+    public static function getTicketLink($tickets_id)
+    {
+        $tickets_id = (int) $tickets_id;
+        if ($tickets_id <= 0) {
+            return "<i class='text-muted'>" . __('Ainda não gerado', 'hrvacation') . "</i>";
+        }
+        $ticket = new Ticket();
+        if (!$ticket->getFromDB($tickets_id)) {
+            return "#$tickets_id (" . __('removido', 'hrvacation') . ")";
+        }
+        $url = Ticket::getFormURLWithID($tickets_id);
+        return "<a href='" . htmlspecialchars($url) . "'>#$tickets_id - " .
+            htmlspecialchars($ticket->fields['name']) . "</a>";
+    }
+
+    // --------------------------------------------------------------- SEARCH
+
+    /**
+     * Colunas disponíveis na listagem/busca.
+     */
+    public function rawSearchOptions()
+    {
+        $opts = [];
+
+        $opts[] = ['id' => 'common', 'name' => self::getTypeName(2)];
+
+        $opts[] = [
+            'id'    => '1',
+            'table' => self::getTable(),
+            'field' => 'id',
+            'name'  => __('ID'),
+            'datatype'      => 'itemlink',
+            'massiveaction' => false,
+        ];
+        $opts[] = [
+            'id'       => '2',
+            'table'    => User::getTable(),
+            'field'    => 'name',
+            'name'     => User::getTypeName(1),
+            'datatype' => 'dropdown',
+        ];
+        $opts[] = [
+            'id'       => '3',
+            'table'    => self::getTable(),
+            'field'    => 'date_start',
+            'name'     => __('Início do afastamento', 'hrvacation'),
+            'datatype' => 'date',
+        ];
+        $opts[] = [
+            'id'       => '4',
+            'table'    => self::getTable(),
+            'field'    => 'date_end',
+            'name'     => __('Término do afastamento', 'hrvacation'),
+            'datatype' => 'date',
+        ];
+        $opts[] = [
+            'id'       => '5',
+            'table'    => self::getTable(),
+            'field'    => 'block_ticket_id',
+            'name'     => __('Chamado de bloqueio', 'hrvacation'),
+            'datatype' => 'number',
+        ];
+        $opts[] = [
+            'id'       => '6',
+            'table'    => self::getTable(),
+            'field'    => 'unblock_ticket_id',
+            'name'     => __('Chamado de liberação', 'hrvacation'),
+            'datatype' => 'number',
+        ];
+        $opts[] = [
+            'id'       => '16',
+            'table'    => self::getTable(),
+            'field'    => 'comment',
+            'name'     => __('Comentários'),
+            'datatype' => 'text',
+        ];
+        $opts[] = [
+            'id'       => '80',
+            'table'    => 'glpi_entities',
+            'field'    => 'completename',
+            'name'     => \Entity::getTypeName(1),
+            'datatype' => 'dropdown',
+        ];
+
+        return $opts;
+    }
+
+    // ------------------------------------------------------------------ CRON
+
+    /**
+     * Descrição da tarefa automática (exibida em Configurar > Ações automáticas).
+     */
+    public static function cronInfo($name)
+    {
+        if ($name === 'vacationTickets') {
+            return [
+                'description' => __('Abre chamados de bloqueio/liberação de acessos por afastamento', 'hrvacation'),
+            ];
+        }
+        return [];
+    }
+
+    /**
+     * Abertura imediata ao cadastrar: se as férias já começaram (ou começam
+     * hoje, dentro da antecedência), o chamado de bloqueio é aberto na hora,
+     * sem esperar o cron. Idem para a liberação, se o término já estiver
+     * dentro da janela. Períodos futuros continuam a cargo do cron.
+     */
+    public function post_addItem()
+    {
+        $config = Config::getConfig();
+        self::processDue($this->fields, $config);
+        parent::post_addItem();
+    }
+
+    /**
+     * Tarefa diária: percorre os períodos pendentes e abre os chamados que já
+     * estão na hora (incluindo retroativos), criando cada chamado uma única vez.
+     *
+     * @param CronTask $task
+     * @return integer 1 = executou ações, 0 = nada a fazer
+     */
+    public static function cronVacationTickets(CronTask $task)
+    {
+        global $DB;
+
+        $config = Config::getConfig();
+        $count  = 0;
+
+        // Períodos não excluídos que ainda têm algum chamado pendente.
+        $iterator = $DB->request([
+            'FROM'  => self::getTable(),
+            'WHERE' => [
+                'is_deleted' => 0,
+                'OR'         => [
+                    ['block_ticket_id'   => 0],
+                    ['unblock_ticket_id' => 0],
+                ],
+            ],
+        ]);
+
+        foreach ($iterator as $row) {
+            $n = self::processDue($row, $config);
+            if ($n > 0) {
+                $task->addVolume($n);
+                $count += $n;
+            }
+        }
+
+        return $count > 0 ? 1 : 0;
+    }
+
+    /**
+     * Avalia UM período e abre os chamados que já estão "vencidos" (na hora),
+     * gravando os IDs no próprio período. Reaproveitado pelo cron e pela
+     * abertura imediata no cadastro.
+     *
+     * Regras (com base na data de HOJE):
+     *  - Bloqueio: abre se o início já chegou (hoje, antecedência ou retroativo)
+     *    e o período ainda não terminou.
+     *  - Liberação: abre se o término já está dentro da janela de antecedência
+     *    (piso de 30 dias para não criar para férias muito antigas).
+     *
+     * @param array $row    Linha do período (campos).
+     * @param array $config Configuração do plugin.
+     * @return integer Quantidade de chamados abertos (0, 1 ou 2).
+     */
+    protected static function processDue(array $row, array $config)
+    {
+        $today             = date('Y-m-d');
+        $lead_block        = (int) $config['block_lead_days'];
+        $lead_unblock      = (int) $config['unblock_lead_days'];
+        $block_threshold   = date('Y-m-d', strtotime("+{$lead_block} days"));
+        $unblock_threshold = date('Y-m-d', strtotime("+{$lead_unblock} days"));
+        $unblock_floor     = date('Y-m-d', strtotime('-30 days'));
+
+        $count = 0;
+
+        // ---- Bloqueio ----
+        if ((int) $row['block_ticket_id'] === 0
+            && $row['date_start'] !== null && $row['date_end'] !== null
+            && $row['date_start'] <= $block_threshold
+            && $row['date_end'] >= $today) {
+            $tid = self::openTicket($row, 'block', $config);
+            if ($tid > 0) {
+                (new self())->update(['id' => $row['id'], 'block_ticket_id' => $tid]);
+                $row['block_ticket_id'] = $tid;
+                $count++;
+            }
+        }
+
+        // ---- Liberação ----
+        if ((int) $row['unblock_ticket_id'] === 0
+            && $row['date_end'] !== null
+            && $row['date_end'] <= $unblock_threshold
+            && $row['date_end'] >= $unblock_floor) {
+            $tid = self::openTicket($row, 'unblock', $config);
+            if ($tid > 0) {
+                (new self())->update(['id' => $row['id'], 'unblock_ticket_id' => $tid]);
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Cria de fato o chamado (bloqueio ou liberação) para um período.
+     *
+     * @param array  $row    Linha do período.
+     * @param string $kind   'block' ou 'unblock'.
+     * @param array  $config Configuração do plugin.
+     * @return integer ID do chamado criado, ou 0 em caso de falha.
+     */
+    protected static function openTicket(array $row, $kind, array $config)
+    {
+        $user = new User();
+        $username = $user->getFromDB($row['users_id'])
+            ? $user->getFriendlyName()
+            : ('#' . $row['users_id']);
+
+        $start = Html::convDate($row['date_start']);
+        $end   = Html::convDate($row['date_end']);
+        $periodo = sprintf(
+            __('Período de afastamento: %1$s a %2$s.', 'hrvacation'),
+            $start,
+            $end
+        );
+
+        if ($kind === 'block') {
+            $title = sprintf(__('Bloqueio de acessos - %s (afastamento)', 'hrvacation'), $username);
+            $cat   = (int) $config['itilcategories_id_block'];
+            $body  = $title . "\n\n" . $periodo . "\n\n"
+                . __('Solicitação do RH: bloquear os acessos do colaborador durante o período de afastamento.', 'hrvacation');
+        } else {
+            $title = sprintf(__('Liberação de acessos - %s (retorno de afastamento)', 'hrvacation'), $username);
+            $cat   = (int) $config['itilcategories_id_unblock'];
+            $body  = $title . "\n\n" . $periodo . "\n\n"
+                . __('Solicitação do RH: liberar novamente os acessos do colaborador no retorno do afastamento.', 'hrvacation');
+        }
+
+        if (!empty($row['comment'])) {
+            $body .= "\n\n" . __('Observações do RH:', 'hrvacation') . " " . $row['comment'];
+        }
+
+        $input = [
+            'name'        => $title,
+            'content'     => $body,
+            'entities_id' => $row['entities_id'],
+            'type'        => (int) ($config['ticket_type'] ?: Ticket::DEMAND_TYPE),
+            'status'      => Ticket::INCOMING,
+        ];
+
+        // Categoria do chamado (se configurada).
+        if ($cat > 0) {
+            $input['itilcategories_id'] = $cat;
+        }
+        // O colaborador entra como requerente do chamado.
+        if ((int) $row['users_id'] > 0) {
+            $input['_users_id_requester'] = (int) $row['users_id'];
+        }
+        // Grupo responsável pelo atendimento (se configurado).
+        if (!empty($config['groups_id_assign'])) {
+            $input['_groups_id_assign'] = (int) $config['groups_id_assign'];
+        }
+
+        $ticket = new Ticket();
+        $tid = $ticket->add($input);
+
+        if (!$tid) {
+            return 0;
+        }
+        $tid = (int) $tid;
+
+        // Cria as tarefas (uma por linha da configuração), sem responsável.
+        $tasks_text = ($kind === 'block')
+            ? ($config['block_tasks'] ?? '')
+            : ($config['unblock_tasks'] ?? '');
+        self::addTicketTasks($tid, $tasks_text);
+
+        return $tid;
+    }
+
+    /**
+     * Cria uma TicketTask "a fazer" (sem responsável) para cada linha não vazia
+     * do texto informado.
+     *
+     * @param integer $tickets_id
+     * @param string  $tasks_text  Tarefas separadas por quebra de linha.
+     * @return void
+     */
+    protected static function addTicketTasks($tickets_id, $tasks_text)
+    {
+        if (trim((string) $tasks_text) === '') {
+            return;
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $tasks_text);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $task = new TicketTask();
+            $task->add([
+                'tickets_id' => $tickets_id,
+                'content'    => $line,
+                'state'      => 1, // 1 = "A fazer" (Planning::TODO)
+            ]);
+        }
+    }
+
+    // ------------------------------------------------ CANCELAMENTO AO EXCLUIR
+
+    /**
+     * Ao excluir (enviar para a lixeira) um período, cancela os chamados que já
+     * tinham sido abertos.
+     */
+    public function post_deleteItem()
+    {
+        $this->cancelLinkedTickets();
+        parent::post_deleteItem();
+    }
+
+    /**
+     * Mesmo tratamento caso o período seja excluído definitivamente (purgado)
+     * direto, sem passar pela lixeira.
+     */
+    public function post_purgeItem()
+    {
+        $this->cancelLinkedTickets();
+        parent::post_purgeItem();
+    }
+
+    /**
+     * Cancela os chamados de bloqueio e liberação vinculados a este período.
+     */
+    protected function cancelLinkedTickets()
+    {
+        $reason = __('Férias canceladas pelo RH', 'hrvacation');
+        foreach (['block_ticket_id', 'unblock_ticket_id'] as $field) {
+            $tid = (int) ($this->fields[$field] ?? 0);
+            if ($tid > 0) {
+                self::cancelTicket($tid, $reason);
+            }
+        }
+    }
+
+    /**
+     * "Cancela" um chamado: registra uma solução com o motivo, movendo-o para
+     * o status Solucionado. Ignora chamados já solucionados/fechados.
+     *
+     * @param integer $tickets_id
+     * @param string  $reason
+     * @return void
+     */
+    protected static function cancelTicket($tickets_id, $reason)
+    {
+        $ticket = new Ticket();
+        if (!$ticket->getFromDB($tickets_id)) {
+            return;
+        }
+
+        $status = (int) $ticket->fields['status'];
+        if (in_array($status, [Ticket::SOLVED, Ticket::CLOSED], true)) {
+            return; // já resolvido/fechado, nada a fazer
+        }
+
+        $solution = new ITILSolution();
+        $solution->add([
+            'itemtype' => Ticket::class,
+            'items_id' => $tickets_id,
+            'content'  => $reason,
+        ]);
+    }
+
+    // -------------------------------------------------------------- CALENDAR
+
+    /**
+     * Renderiza um calendário mensal simples (sem dependências de JS externas),
+     * destacando os colaboradores em férias em cada dia.
+     *
+     * @param integer $year
+     * @param integer $month 1..12
+     * @return void
+     */
+    public static function showCalendar($year, $month)
+    {
+        global $DB;
+
+        $month = max(1, min(12, (int) $month));
+        $year  = (int) $year;
+
+        $first_ts   = mktime(0, 0, 0, $month, 1, $year);
+        $days_in    = (int) date('t', $first_ts);
+        $first_dow  = (int) date('w', $first_ts); // 0 = domingo
+        $first_date = date('Y-m-d', $first_ts);
+        $last_date  = date('Y-m-d', mktime(0, 0, 0, $month, $days_in, $year));
+
+        // Navegação prev/next.
+        $prev = ['m' => $month - 1, 'y' => $year];
+        if ($prev['m'] < 1) { $prev['m'] = 12; $prev['y']--; }
+        $next = ['m' => $month + 1, 'y' => $year];
+        if ($next['m'] > 12) { $next['m'] = 1; $next['y']++; }
+
+        // Períodos que cruzam o mês exibido (respeitando a entidade ativa).
+        $byday = [];
+        $iterator = $DB->request([
+            'FROM'  => self::getTable(),
+            'WHERE' => [
+                'is_deleted' => 0,
+                ['date_start' => ['<=', $last_date]],
+                ['date_end'   => ['>=', $first_date]],
+            ] + getEntitiesRestrictCriteria(self::getTable()),
+        ]);
+        foreach ($iterator as $row) {
+            $user = new User();
+            $label = $user->getFromDB($row['users_id'])
+                ? $user->getFriendlyName()
+                : ('#' . $row['users_id']);
+
+            $d0 = max($row['date_start'], $first_date);
+            $d1 = min($row['date_end'], $last_date);
+            $cur = strtotime($d0);
+            $end = strtotime($d1);
+            while ($cur <= $end) {
+                $day = (int) date('j', $cur);
+                $byday[$day][] = [
+                    'label' => $label,
+                    'id'    => $row['id'],
+                ];
+                $cur = strtotime('+1 day', $cur);
+            }
+        }
+
+        $months_pt = [
+            1 => 'Janeiro', 2 => 'Fevereiro', 3 => 'Março', 4 => 'Abril',
+            5 => 'Maio', 6 => 'Junho', 7 => 'Julho', 8 => 'Agosto',
+            9 => 'Setembro', 10 => 'Outubro', 11 => 'Novembro', 12 => 'Dezembro',
+        ];
+        $weekdays = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+        $base = self::getFormURL(false);
+        $cal  = '/plugins/hrvacation/front/calendar.php';
+        $today = date('Y-m-d');
+
+        echo "<div class='hrvac-calendar' style='max-width:1100px;margin:auto;'>";
+
+        // Cabeçalho com navegação.
+        echo "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;'>";
+        echo "<a class='btn btn-outline-secondary' href='{$cal}?month={$prev['m']}&year={$prev['y']}'>"
+            . "&laquo; " . __('Mês anterior', 'hrvacation') . "</a>";
+        echo "<h2 style='margin:0;'>" . $months_pt[$month] . " " . $year . "</h2>";
+        echo "<div>";
+        if (self::canCreate()) {
+            echo "<a class='btn btn-primary' href='" . $base . "?id=-1'>"
+                . "<i class='ti ti-plus'></i> " . __('Cadastrar afastamento', 'hrvacation') . "</a> ";
+        }
+        echo "<a class='btn btn-outline-info' href='/plugins/hrvacation/front/timeline.php'>"
+            . "<i class='ti ti-timeline'></i> " . __('Linha do tempo', 'hrvacation') . "</a> ";
+        echo "<a class='btn btn-outline-secondary' href='{$cal}?month={$next['m']}&year={$next['y']}'>"
+            . __('Próximo mês', 'hrvacation') . " &raquo;</a>";
+        echo "</div>";
+        echo "</div>";
+
+        // Grade do mês.
+        echo "<table class='tab_cadre_fixe' style='table-layout:fixed;'>";
+        echo "<tr>";
+        foreach ($weekdays as $wd) {
+            echo "<th style='width:14.28%;text-align:center;'>$wd</th>";
+        }
+        echo "</tr>";
+
+        $cell = 0;
+        $day  = 1;
+        $total_cells = $first_dow + $days_in;
+        $rows = (int) ceil($total_cells / 7);
+
+        for ($r = 0; $r < $rows; $r++) {
+            echo "<tr>";
+            for ($c = 0; $c < 7; $c++) {
+                if ($cell < $first_dow || $day > $days_in) {
+                    echo "<td style='height:90px;vertical-align:top;background:#f7f7f7;'></td>";
+                } else {
+                    $thisdate = sprintf('%04d-%02d-%02d', $year, $month, $day);
+                    $istoday = ($thisdate === $today);
+                    $style = "height:90px;vertical-align:top;padding:3px;";
+                    if ($istoday) {
+                        $style .= "background:#fff7e6;border:2px solid #f0ad4e;";
+                    }
+                    echo "<td style='$style'>";
+                    echo "<div style='font-weight:bold;font-size:12px;color:#555;'>$day</div>";
+                    if (!empty($byday[$day])) {
+                        foreach ($byday[$day] as $entry) {
+                            $url = $base . '?id=' . (int) $entry['id'];
+                            echo "<div style='margin-top:2px;'>";
+                            echo "<a href='" . htmlspecialchars($url) . "' "
+                                . "style='display:block;font-size:11px;background:#cfe8ff;color:#0b4f8a;"
+                                . "border-radius:3px;padding:1px 4px;overflow:hidden;text-overflow:ellipsis;"
+                                . "white-space:nowrap;text-decoration:none;' "
+                                . "title='" . htmlspecialchars($entry['label']) . "'>"
+                                . htmlspecialchars($entry['label']) . "</a>";
+                            echo "</div>";
+                        }
+                    }
+                    echo "</td>";
+                    $day++;
+                }
+                $cell++;
+            }
+            echo "</tr>";
+        }
+        echo "</table>";
+        echo "</div>";
+    }
+
+    // -------------------------------------------------------------- TIMELINE
+
+    /**
+     * Renderiza uma linha do tempo (Gantt) com TODOS os períodos de férias que
+     * cruzam a janela exibida: uma barra por colaborador, do início ao fim das
+     * férias, empilhadas para evidenciar sobreposições.
+     *
+     * @param string  $start_date Data inicial da janela (Y-m-d).
+     * @param integer $days       Tamanho da janela em dias.
+     * @return void
+     */
+    public static function showTimeline($start_date, $days)
+    {
+        global $DB;
+
+        $days = max(15, min(366, (int) $days));
+        $win_start = $start_date ?: date('Y-m-01');
+        $win_start_ts = strtotime($win_start);
+        $win_start = date('Y-m-d', $win_start_ts);
+        $win_end_ts = strtotime("+{$days} days", $win_start_ts);
+        $win_end = date('Y-m-d', $win_end_ts);
+        $total = $days; // total de dias da régua
+
+        // Períodos que cruzam a janela (respeitando a entidade ativa).
+        $iterator = $DB->request([
+            'FROM'  => self::getTable(),
+            'WHERE' => [
+                'is_deleted' => 0,
+                ['date_start' => ['<=', $win_end]],
+                ['date_end'   => ['>=', $win_start]],
+            ] + getEntitiesRestrictCriteria(self::getTable()),
+            'ORDER' => ['date_start ASC', 'date_end ASC'],
+        ]);
+
+        $rows = [];
+        foreach ($iterator as $row) {
+            $user = new User();
+            $name = $user->getFromDB($row['users_id'])
+                ? $user->getFriendlyName()
+                : ('#' . $row['users_id']);
+            $rows[] = $row + ['_name' => $name];
+        }
+
+        $months_pt = [
+            1 => 'Jan', 2 => 'Fev', 3 => 'Mar', 4 => 'Abr', 5 => 'Mai', 6 => 'Jun',
+            7 => 'Jul', 8 => 'Ago', 9 => 'Set', 10 => 'Out', 11 => 'Nov', 12 => 'Dez',
+        ];
+
+        $base = self::getFormURL(false);
+        $self = '/plugins/hrvacation/front/timeline.php';
+        $today = date('Y-m-d');
+        $label_w = 240; // largura da coluna de nomes (px)
+
+        // Navegação (janela anterior/seguinte) e tamanhos de janela.
+        $prev_start = date('Y-m-d', strtotime("-{$days} days", $win_start_ts));
+        $next_start = date('Y-m-d', strtotime("+{$days} days", $win_start_ts));
+
+        echo "<div class='hrvac-timeline' style='max-width:1200px;margin:auto;'>";
+
+        echo "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;'>";
+        echo "<a class='btn btn-outline-secondary' href='{$self}?start={$prev_start}&days={$days}'>&laquo; "
+            . __('Anterior', 'hrvacation') . "</a>";
+        echo "<h2 style='margin:0;'>" . __('Linha do tempo de afastamentos', 'hrvacation') . "</h2>";
+        echo "<div style='display:flex;gap:6px;align-items:center;'>";
+        foreach ([30 => '30d', 90 => '90d', 180 => '180d'] as $d => $lbl) {
+            $active = ($d === $days) ? 'btn-info' : 'btn-outline-info';
+            echo "<a class='btn {$active}' href='{$self}?start={$win_start}&days={$d}'>{$lbl}</a>";
+        }
+        echo "<a class='btn btn-outline-secondary' href='/plugins/hrvacation/front/calendar.php'>"
+            . "<i class='ti ti-calendar'></i> " . __('Calendário', 'hrvacation') . "</a>";
+        if (self::canCreate()) {
+            echo "<a class='btn btn-primary' href='" . $base . "?id=-1'>"
+                . "<i class='ti ti-plus'></i> " . __('Cadastrar', 'hrvacation') . "</a>";
+        }
+        echo "</div>";
+        echo "<a class='btn btn-outline-secondary' href='{$self}?start={$next_start}&days={$days}'>"
+            . __('Próxima', 'hrvacation') . " &raquo;</a>";
+        echo "</div>";
+
+        // Período exibido (texto).
+        echo "<div style='text-align:center;color:#666;margin-bottom:8px;'>"
+            . Html::convDate($win_start) . " &mdash; " . Html::convDate($win_end) . "</div>";
+
+        // Régua superior: marcas de início de mês + linha de "hoje".
+        $month_marks = [];
+        for ($i = 0; $i <= $total; $i++) {
+            $d = strtotime("+{$i} days", $win_start_ts);
+            if ((int) date('j', $d) === 1 || $i === 0) {
+                $left = ($i / $total) * 100;
+                $month_marks[] = [
+                    'left'  => $left,
+                    'label' => $months_pt[(int) date('n', $d)] . '/' . date('y', $d),
+                ];
+            }
+        }
+        $today_left = null;
+        if ($today >= $win_start && $today <= $win_end) {
+            $today_left = ((strtotime($today) - $win_start_ts) / DAY_TIMESTAMP / $total) * 100;
+        }
+
+        // Container com overlay de gridlines.
+        echo "<div style='position:relative;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;'>";
+
+        // Cabeçalho da régua.
+        echo "<div style='position:relative;height:26px;background:#f5f7fa;border-bottom:1px solid #e0e0e0;'>";
+        echo "<div style='position:absolute;left:0;top:0;bottom:0;width:{$label_w}px;"
+            . "font-weight:bold;font-size:12px;color:#555;display:flex;align-items:center;padding-left:8px;'>"
+            . __('Colaborador', 'hrvacation') . "</div>";
+        echo "<div style='position:absolute;left:{$label_w}px;right:0;top:0;bottom:0;'>";
+        foreach ($month_marks as $mk) {
+            $l = number_format($mk['left'], 3, '.', '');
+            echo "<div style='position:absolute;left:{$l}%;top:0;bottom:0;border-left:1px solid #d9e2ec;'>"
+                . "<span style='font-size:11px;color:#486581;padding-left:3px;'>"
+                . htmlspecialchars($mk['label']) . "</span></div>";
+        }
+        if ($today_left !== null) {
+            $tl = number_format($today_left, 3, '.', '');
+            echo "<div style='position:absolute;left:{$tl}%;top:0;bottom:0;border-left:2px solid #e8590c;'></div>";
+        }
+        echo "</div></div>";
+
+        if (empty($rows)) {
+            echo "<div style='padding:20px;text-align:center;color:#888;'>"
+                . __('Nenhum afastamento cadastrado nesta janela.', 'hrvacation') . "</div>";
+        }
+
+        // Paleta para diferenciar barras.
+        $palette = [
+            ['#cfe8ff', '#0b4f8a'], ['#d3f9d8', '#2b8a3e'], ['#ffe3e3', '#c92a2a'],
+            ['#fff3bf', '#e67700'], ['#e5dbff', '#6741d9'], ['#c5f6fa', '#0c8599'],
+        ];
+
+        $r = 0;
+        foreach ($rows as $row) {
+            $start = max($row['date_start'], $win_start);
+            $end   = min($row['date_end'], $win_end);
+            $off   = (strtotime($start) - $win_start_ts) / DAY_TIMESTAMP;
+            $span  = ((strtotime($end) - strtotime($start)) / DAY_TIMESTAMP) + 1;
+
+            $left  = max(0, ($off / $total) * 100);
+            $width = max(0.8, ($span / $total) * 100);
+            if ($left + $width > 100) {
+                $width = 100 - $left;
+            }
+            $left  = number_format($left, 3, '.', '');
+            $width = number_format($width, 3, '.', '');
+
+            [$bg, $fg] = $palette[$r % count($palette)];
+            $rowbg = ($r % 2) ? '#ffffff' : '#fbfcfd';
+
+            $range_txt = Html::convDate($row['date_start']) . ' – ' . Html::convDate($row['date_end']);
+            $url = $base . '?id=' . (int) $row['id'];
+
+            echo "<div style='position:relative;height:34px;background:{$rowbg};border-bottom:1px solid #f0f0f0;'>";
+
+            // Nome + datas (coluna fixa).
+            echo "<div style='position:absolute;left:0;top:0;bottom:0;width:{$label_w}px;"
+                . "display:flex;flex-direction:column;justify-content:center;padding-left:8px;overflow:hidden;'>";
+            echo "<span style='font-size:12px;font-weight:600;color:#333;white-space:nowrap;"
+                . "overflow:hidden;text-overflow:ellipsis;'>" . htmlspecialchars($row['_name']) . "</span>";
+            echo "<span style='font-size:10px;color:#888;'>" . htmlspecialchars($range_txt) . "</span>";
+            echo "</div>";
+
+            // Trilha + barra.
+            echo "<div style='position:absolute;left:{$label_w}px;right:0;top:0;bottom:0;'>";
+            // gridlines de mês na linha.
+            foreach ($month_marks as $mk) {
+                $l = number_format($mk['left'], 3, '.', '');
+                echo "<div style='position:absolute;left:{$l}%;top:0;bottom:0;border-left:1px solid #f0f3f6;'></div>";
+            }
+            if ($today_left !== null) {
+                $tl = number_format($today_left, 3, '.', '');
+                echo "<div style='position:absolute;left:{$tl}%;top:0;bottom:0;border-left:2px solid #ffd8a8;'></div>";
+            }
+            // a barra.
+            echo "<a href='" . htmlspecialchars($url) . "' title='" . htmlspecialchars($row['_name'] . ' — ' . $range_txt) . "' "
+                . "style='position:absolute;left:{$left}%;width:{$width}%;top:7px;height:20px;"
+                . "background:{$bg};color:{$fg};border:1px solid {$fg};border-radius:10px;"
+                . "font-size:10px;line-height:18px;padding:0 6px;white-space:nowrap;overflow:hidden;"
+                . "text-overflow:ellipsis;text-decoration:none;box-sizing:border-box;'>"
+                . htmlspecialchars($range_txt) . "</a>";
+            echo "</div>";
+
+            echo "</div>";
+            $r++;
+        }
+
+        echo "</div>"; // container
+        echo "<div style='margin-top:8px;font-size:11px;color:#999;'>"
+            . "<span style='border-left:2px solid #e8590c;padding-left:4px;'>"
+            . __('Linha laranja = hoje. Clique numa barra para abrir o período.', 'hrvacation')
+            . "</span></div>";
+        echo "</div>"; // wrapper
+    }
+}
