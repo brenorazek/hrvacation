@@ -20,7 +20,6 @@ redirecionar e-mail, etc.), totalmente configuráveis pela interface.
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
-- [Permissões](#permissões)
 - [Uso](#uso)
 - [Como os chamados são abertos](#como-os-chamados-são-abertos)
 - [Cancelamento ao excluir](#cancelamento-ao-excluir)
@@ -110,30 +109,6 @@ Redirecionar Email
 ```
 
 E o espelho de liberação (desbloquear / remover redirecionamento, etc.).
-
----
-
-## Permissões
-
-O acesso ao plugin é controlado por um direito próprio, exibido em
-**Administração › Perfis › [perfil] › aba do plugin** (ou na lista de direitos
-do perfil). Sem esse direito marcado, a entrada **Afastamentos** **não aparece**
-no menu Ferramentas para o usuário.
-
-Na instalação, apenas o perfil **Super-Admin** recebe acesso total; todos os
-demais perfis começam sem acesso. Para liberar o uso ao RH (ou a quem for
-operar), edite o perfil correspondente e marque os níveis desejados:
-
-| Nível | O que libera |
-|-------|--------------|
-| **Ler** | Ver a listagem, o calendário, a linha do tempo e abrir afastamentos. |
-| **Criar** | Cadastrar novos afastamentos. |
-| **Atualizar** | Editar afastamentos existentes. |
-| **Excluir** | Enviar afastamentos para a lixeira (e cancelar os chamados vinculados). |
-| **Purgar** | Excluir definitivamente. |
-
-> A configuração do plugin (categorias, tarefas, antecedências) usa o direito
-> padrão de **configuração** do GLPI, separado do direito de afastamentos.
 
 ---
 

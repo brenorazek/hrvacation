@@ -56,7 +56,7 @@ class Config extends CommonDBTM
             'Bloquear acesso sectra SmartMed',
             'Bloquear acesso sectra Medfield',
             'Bloquear acesso Office 365',
-            'Configurar mensagem de férias Office 365',
+            'Configurar mensagem de ausência Office 365',
             'Redirecionar Email',
         ]);
     }
@@ -72,7 +72,7 @@ class Config extends CommonDBTM
             'Desbloquear acesso sectra SmartMed',
             'Desbloquear acesso sectra Medfield',
             'Desbloquear acesso Office 365',
-            'Remover mensagem de férias Office 365',
+            'Remover mensagem de ausência Office 365',
             'Remover redirecionamento de Email',
         ]);
     }

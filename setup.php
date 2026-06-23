@@ -12,7 +12,7 @@
 
 use GlpiPlugin\Hrvacation\Period;
 
-define('PLUGIN_HRVACATION_VERSION', '1.6.1');
+define('PLUGIN_HRVACATION_VERSION', '1.6.2');
 define('PLUGIN_HRVACATION_MIN_GLPI', '10.0.0');
 
 /**
