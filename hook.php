@@ -6,7 +6,6 @@
 
 use GlpiPlugin\Hrvacation\Config;
 use GlpiPlugin\Hrvacation\Period;
-
 /**
  * Instalação: cria tabelas, direitos de perfil, configuração padrão e cron.
  *
@@ -31,6 +30,7 @@ function plugin_hrvacation_install()
             `date_end`           date                 DEFAULT NULL,
             `block_ticket_id`    int {$sign} NOT NULL DEFAULT '0',
             `unblock_ticket_id`  int {$sign} NOT NULL DEFAULT '0',
+            `users_id_redirect`  int {$sign} NOT NULL DEFAULT '0',
             `comment`            text,
             `is_deleted`         tinyint     NOT NULL DEFAULT '0',
             `users_id_recipient` int {$sign} NOT NULL DEFAULT '0',
@@ -78,7 +78,7 @@ function plugin_hrvacation_install()
     }
 
     // --- Migração de instalações já existentes ------------------------------
-    // Adiciona os novos campos de tarefas em quem já tinha o plugin instalado.
+    // Adiciona os novos campos em quem já tinha o plugin instalado.
     $migration = new Migration(PLUGIN_HRVACATION_VERSION);
     if (!$DB->fieldExists('glpi_plugin_hrvacation_configs', 'block_tasks')) {
         $migration->addField('glpi_plugin_hrvacation_configs', 'block_tasks', 'text');
@@ -86,7 +86,40 @@ function plugin_hrvacation_install()
     if (!$DB->fieldExists('glpi_plugin_hrvacation_configs', 'unblock_tasks')) {
         $migration->addField('glpi_plugin_hrvacation_configs', 'unblock_tasks', 'text');
     }
+    if (!$DB->fieldExists('glpi_plugin_hrvacation_periods', 'users_id_redirect')) {
+        $migration->addField(
+            'glpi_plugin_hrvacation_periods',
+            'users_id_redirect',
+            "int " . $sign . " NOT NULL DEFAULT '0'",
+            ['after' => 'unblock_ticket_id']
+        );
+        $migration->addKey('glpi_plugin_hrvacation_periods', 'users_id_redirect');
+    }
+    // Remove o campo antigo de e-mail (substituído pelo usuário de destino).
+    if ($DB->fieldExists('glpi_plugin_hrvacation_periods', 'email_redirect')) {
+        $migration->dropField('glpi_plugin_hrvacation_periods', 'email_redirect');
+    }
     $migration->executeMigration();
+
+    // --- Preferências de exibição (colunas padrão da listagem) --------------
+    // Exibe, por padrão, colaborador, início e término (a coluna 1/ID já é
+    // forçada pelo GLPI). num: 2=usuário, 3=início, 4=término.
+    foreach ([2 => 1, 3 => 2, 4 => 3] as $num => $rank) {
+        $exists = countElementsInTable('glpi_displaypreferences', [
+            'itemtype' => Period::class,
+            'num'      => $num,
+            'users_id' => 0,
+        ]);
+        if (!$exists) {
+            $dp = new DisplayPreference();
+            $dp->add([
+                'itemtype' => Period::class,
+                'num'      => $num,
+                'rank'     => $rank,
+                'users_id' => 0,
+            ]);
+        }
+    }
 
     // Preenche os valores padrão de tarefas se ainda estiverem vazios.
     $cfg = new Config();
@@ -174,6 +207,9 @@ function plugin_hrvacation_uninstall()
     // Remove a tarefa automática.
     $cron = new CronTask();
     $cron->deleteByCriteria(['itemtype' => Period::class]);
+
+    // Remove as preferências de exibição da listagem.
+    $DB->delete('glpi_displaypreferences', ['itemtype' => Period::class]);
 
     // Remove os direitos dos perfis.
     if (method_exists('ProfileRight', 'deleteProfileRights')) {

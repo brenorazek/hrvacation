@@ -147,10 +147,15 @@ class Period extends CommonDBTM
             'entity' => $this->fields['entities_id'],
         ]);
         echo "</td>";
-        echo "<td>" . __('Comentários') . "</td>";
+        echo "<td>" . __('Redirecionar e-mail para', 'hrvacation') . "</td>";
         echo "<td>";
-        echo "<textarea class='form-control' name='comment' rows='3'>" .
-            Html::cleanInputText($this->fields['comment'] ?? '') . "</textarea>";
+        User::dropdown([
+            'name'                => 'users_id_redirect',
+            'value'               => $this->fields['users_id_redirect'] ?? 0,
+            'right'               => 'all',
+            'entity'              => $this->fields['entities_id'],
+            'display_emptychoice' => true,
+        ]);
         echo "</td>";
         echo "</tr>";
 
@@ -162,6 +167,14 @@ class Period extends CommonDBTM
         echo "<td>" . __('Término do afastamento', 'hrvacation') . " <span class='red'>*</span></td>";
         echo "<td>";
         Html::showDateField('date_end', ['value' => $this->fields['date_end']]);
+        echo "</td>";
+        echo "</tr>";
+
+        echo "<tr class='tab_bg_1'>";
+        echo "<td>" . __('Comentários') . "</td>";
+        echo "<td colspan='3'>";
+        echo "<textarea class='form-control' name='comment' rows='3' style='width:100%;'>" .
+            Html::cleanInputText($this->fields['comment'] ?? '') . "</textarea>";
         echo "</td>";
         echo "</tr>";
 
@@ -255,6 +268,14 @@ class Period extends CommonDBTM
             'field'    => 'comment',
             'name'     => __('Comentários'),
             'datatype' => 'text',
+        ];
+        $opts[] = [
+            'id'        => '17',
+            'table'     => User::getTable(),
+            'field'     => 'name',
+            'linkfield' => 'users_id_redirect',
+            'name'      => __('Redirecionar e-mail para', 'hrvacation'),
+            'datatype'  => 'dropdown',
         ];
         $opts[] = [
             'id'       => '80',
@@ -419,6 +440,17 @@ class Period extends CommonDBTM
             $cat   = (int) $config['itilcategories_id_unblock'];
             $body  = $title . "\n\n" . $periodo . "\n\n"
                 . __('Solicitação do RH: liberar novamente os acessos do colaborador no retorno do afastamento.', 'hrvacation');
+        }
+
+        $redir_id = (int) ($row['users_id_redirect'] ?? 0);
+        if ($redir_id > 0) {
+            $ruser = new User();
+            if ($ruser->getFromDB($redir_id)) {
+                $rname  = $ruser->getFriendlyName();
+                $remail = \UserEmail::getDefaultForUser($redir_id);
+                $rline  = $rname . ($remail ? " <{$remail}>" : '');
+                $body  .= "\n\n" . __('Redirecionar e-mail para:', 'hrvacation') . " " . $rline;
+            }
         }
 
         if (!empty($row['comment'])) {
@@ -601,17 +633,24 @@ class Period extends CommonDBTM
                 ? $user->getFriendlyName()
                 : ('#' . $row['users_id']);
 
-            $d0 = max($row['date_start'], $first_date);
-            $d1 = min($row['date_end'], $last_date);
-            $cur = strtotime($d0);
-            $end = strtotime($d1);
-            while ($cur <= $end) {
-                $day = (int) date('j', $cur);
-                $byday[$day][] = [
-                    'label' => $label,
-                    'id'    => $row['id'],
-                ];
-                $cur = strtotime('+1 day', $cur);
+            $start_in = ($row['date_start'] >= $first_date && $row['date_start'] <= $last_date);
+            $end_in   = ($row['date_end']   >= $first_date && $row['date_end']   <= $last_date);
+
+            if ($row['date_start'] === $row['date_end']) {
+                // Afastamento de um único dia.
+                if ($start_in) {
+                    $day = (int) date('j', strtotime($row['date_start']));
+                    $byday[$day][] = ['label' => $label, 'id' => $row['id'], 'kind' => 'both'];
+                }
+            } else {
+                if ($start_in) {
+                    $day = (int) date('j', strtotime($row['date_start']));
+                    $byday[$day][] = ['label' => $label, 'id' => $row['id'], 'kind' => 'start'];
+                }
+                if ($end_in) {
+                    $day = (int) date('j', strtotime($row['date_end']));
+                    $byday[$day][] = ['label' => $label, 'id' => $row['id'], 'kind' => 'end'];
+                }
             }
         }
 
@@ -675,13 +714,28 @@ class Period extends CommonDBTM
                     if (!empty($byday[$day])) {
                         foreach ($byday[$day] as $entry) {
                             $url = $base . '?id=' . (int) $entry['id'];
+                            $kind = $entry['kind'] ?? 'both';
+                            if ($kind === 'start') {
+                                $bg = '#d3f9d8'; $fg = '#2b8a3e';
+                                $tip = __('Início do afastamento', 'hrvacation');
+                                $marker = '▸ ';
+                            } elseif ($kind === 'end') {
+                                $bg = '#ffe3e3'; $fg = '#c92a2a';
+                                $tip = __('Fim do afastamento', 'hrvacation');
+                                $marker = '◂ ';
+                            } else {
+                                $bg = '#d0ebff'; $fg = '#0b4f8a';
+                                $tip = __('Início e fim do afastamento', 'hrvacation');
+                                $marker = '◆ ';
+                            }
+                            $title = $tip . ' — ' . $entry['label'];
                             echo "<div style='margin-top:2px;'>";
                             echo "<a href='" . htmlspecialchars($url) . "' "
-                                . "style='display:block;font-size:11px;background:#cfe8ff;color:#0b4f8a;"
+                                . "style='display:block;font-size:11px;background:{$bg};color:{$fg};"
                                 . "border-radius:3px;padding:1px 4px;overflow:hidden;text-overflow:ellipsis;"
                                 . "white-space:nowrap;text-decoration:none;' "
-                                . "title='" . htmlspecialchars($entry['label']) . "'>"
-                                . htmlspecialchars($entry['label']) . "</a>";
+                                . "title='" . htmlspecialchars($title) . "'>"
+                                . $marker . htmlspecialchars($entry['label']) . "</a>";
                             echo "</div>";
                         }
                     }
