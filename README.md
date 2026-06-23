@@ -20,6 +20,7 @@ redirecionar e-mail, etc.), totalmente configuráveis pela interface.
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Configuração](#configuração)
+- [Permissões](#permissões)
 - [Uso](#uso)
 - [Como os chamados são abertos](#como-os-chamados-são-abertos)
 - [Cancelamento ao excluir](#cancelamento-ao-excluir)
@@ -112,6 +113,30 @@ E o espelho de liberação (desbloquear / remover redirecionamento, etc.).
 
 ---
 
+## Permissões
+
+O acesso ao plugin é controlado por um direito próprio, exibido em
+**Administração › Perfis › [perfil] › aba do plugin** (ou na lista de direitos
+do perfil). Sem esse direito marcado, a entrada **Afastamentos** **não aparece**
+no menu Ferramentas para o usuário.
+
+Na instalação, apenas o perfil **Super-Admin** recebe acesso total; todos os
+demais perfis começam sem acesso. Para liberar o uso ao RH (ou a quem for
+operar), edite o perfil correspondente e marque os níveis desejados:
+
+| Nível | O que libera |
+|-------|--------------|
+| **Ler** | Ver a listagem, o calendário, a linha do tempo e abrir afastamentos. |
+| **Criar** | Cadastrar novos afastamentos. |
+| **Atualizar** | Editar afastamentos existentes. |
+| **Excluir** | Enviar afastamentos para a lixeira (e cancelar os chamados vinculados). |
+| **Purgar** | Excluir definitivamente. |
+
+> A configuração do plugin (categorias, tarefas, antecedências) usa o direito
+> padrão de **configuração** do GLPI, separado do direito de afastamentos.
+
+---
+
 ## Uso
 
 - Menu **Ferramentas › Afastamentos**.
@@ -198,6 +223,11 @@ Tabelas criadas: `glpi_plugin_hrvacation_periods` e `glpi_plugin_hrvacation_conf
 
 | Versão | Mudanças |
 |--------|----------|
+| 1.9.0 | Entrada "Afastamentos" também na interface simplificada (self-service), no menu Plugins. |
+| 1.8.1 | Redirecionamento de e-mail por seleção de usuário (em vez de texto digitado). |
+| 1.8.0 | Lista mostra ID/colaborador/início/término; calendário marca apenas início e fim (com tooltip); campo de redirecionamento de e-mail. |
+| 1.7.2 | Correções na aba de permissões do perfil (compatibilidade de assinaturas do GLPI 11). |
+| 1.7.0 | Permissão do plugin editável em Administração › Perfis (aba "Afastamentos"). |
 | 1.6.2 | Ajuste de textos: "mensagem de ausência" no lugar de "mensagem de férias". |
 | 1.6.1 | Ícone alterado para período de ausência (`ti ti-calendar-off`). |
 | 1.6.0 | Renomeado de "férias" para "afastamento"; reordenação dos campos do formulário. |
